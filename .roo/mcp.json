@@ -1,0 +1,9 @@
+{
+	"mcpServers": {
+		"dash.js": {
+			"url": "https://gitmcp.io/Dash-Industry-Forum/dash.js",
+			"disabled": false,
+			"autoApprove": []
+		}
+	}
+}

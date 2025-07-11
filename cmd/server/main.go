@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"dash2hlsd/internal/api"
-	"dash2hlsd/internal/config"
+	"dash2hlsd/internal/channels"
 	"dash2hlsd/internal/dash"
 	"dash2hlsd/internal/key"
 	"dash2hlsd/internal/logger"
@@ -29,7 +29,7 @@ func main() {
 	log.Infof("Log level set to: %s", *logLevel)
 
 	// 3. Load configuration
-	cfg, err := config.LoadConfig(*configFile)
+	cfg, err := channels.LoadConfig(*configFile)
 	if err != nil {
 		log.Errorf("Failed to load configuration: %v", err)
 		os.Exit(1)

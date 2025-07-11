@@ -1,6 +1,14 @@
 package dash
 
-import "encoding/xml"
+import (
+	"encoding/xml"
+	"errors"
+	"path"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+)
 
 // MPD is the root element of a Media Presentation Description.
 type MPD struct {
@@ -16,12 +24,69 @@ type MPD struct {
 	Periods               []Period `xml:"Period"`
 }
 
+// GetMinimumUpdatePeriod returns the MinimumUpdatePeriod as a time.Duration.
+func (m *MPD) GetMinimumUpdatePeriod() (time.Duration, error) {
+	return parseDuration(m.MinimumUpdatePeriod)
+}
+
+// parseDuration parses an ISO 8601 duration string like "PT8S".
+func parseDuration(duration string) (time.Duration, error) {
+	if !strings.HasPrefix(duration, "PT") {
+		// Fallback for simple duration strings like "5s"
+		return time.ParseDuration(duration)
+	}
+
+	duration = strings.TrimPrefix(duration, "PT")
+	var totalDuration time.Duration
+	re := regexp.MustCompile(`(\d+\.?\d*)(\w)`)
+	matches := re.FindAllStringSubmatch(duration, -1)
+
+	if len(matches) == 0 && duration != "" {
+		// Handle cases like "PT" which means zero duration
+		if duration == "" {
+			return 0, nil
+		}
+		return 0, errors.New("invalid ISO 8601 duration format")
+	}
+
+	for _, match := range matches {
+		valueStr := match[1]
+		unit := match[2]
+
+		value, err := strconv.ParseFloat(valueStr, 64)
+		if err != nil {
+			return 0, err
+		}
+
+		switch unit {
+		case "H":
+			totalDuration += time.Duration(value * float64(time.Hour))
+		case "M":
+			totalDuration += time.Duration(value * float64(time.Minute))
+		case "S":
+			totalDuration += time.Duration(value * float64(time.Second))
+		default:
+			return 0, errors.New("unsupported duration unit: " + unit)
+		}
+	}
+
+	return totalDuration, nil
+}
+
 // Period represents a media content period.
 type Period struct {
 	ID      string          `xml:"id,attr"`
 	Start   string          `xml:"start,attr"`
 	BaseURL string          `xml:"BaseURL"`
 	Sets    []AdaptationSet `xml:"AdaptationSet"`
+}
+
+// GetStart returns the Period's start time as a time.Duration.
+func (p *Period) GetStart() (time.Duration, error) {
+	if p.Start == "" {
+		return 0, nil
+	}
+	return parseDuration(p.Start)
 }
 
 // AdaptationSet represents a set of interchangeable representations.
@@ -42,13 +107,14 @@ type AdaptationSet struct {
 
 // Representation represents a specific media stream.
 type Representation struct {
-	ID                string `xml:"id,attr"`
-	Bandwidth         int    `xml:"bandwidth,attr"`
-	Codecs            string `xml:"codecs,attr"`
-	Width             int    `xml:"width,attr,omitempty"`
-	Height            int    `xml:"height,attr,omitempty"`
-	FrameRate         string `xml:"frameRate,attr,omitempty"`
-	AudioSamplingRate int    `xml:"audioSamplingRate,attr,omitempty"`
+	ID                     string `xml:"id,attr"`
+	Bandwidth              int    `xml:"bandwidth,attr"`
+	Codecs                 string `xml:"codecs,attr"`
+	Width                  int    `xml:"width,attr,omitempty"`
+	Height                 int    `xml:"height,attr,omitempty"`
+	FrameRate              string `xml:"frameRate,attr,omitempty"`
+	AudioSamplingRate      int    `xml:"audioSamplingRate,attr,omitempty"`
+	PresentationTimeOffset uint64 `xml:"presentationTimeOffset,attr,omitempty"`
 }
 
 // SegmentTemplate defines the URL structure for segments.
@@ -57,6 +123,11 @@ type SegmentTemplate struct {
 	Initialization string          `xml:"initialization,attr"`
 	Media          string          `xml:"media,attr"`
 	Timeline       SegmentTimeline `xml:"SegmentTimeline"`
+}
+
+// GetInitializationFilename extracts the filename from the Initialization attribute.
+func (st *SegmentTemplate) GetInitializationFilename() string {
+	return path.Base(st.Initialization)
 }
 
 // SegmentTimeline defines the timeline of segments.

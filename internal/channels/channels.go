@@ -1,4 +1,4 @@
-package config
+package channels
 
 import (
 	"encoding/hex"

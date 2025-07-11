@@ -5,8 +5,13 @@ import (
 	"dash2hlsd/internal/session"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
+	"time"
+)
+
+const (
+	playlistRetryInterval = 500 * time.Millisecond
+	playlistMaxRetries    = 65 // 32.5 seconds total wait time, to accommodate downloader retries
 )
 
 type API struct {
@@ -24,7 +29,7 @@ func New(sessionMgr *session.SessionManager, keyService *key.Service) http.Handl
 
 	mux.HandleFunc("GET /live/{channelId}/master.m3u8", api.handleMasterPlaylist)
 	mux.HandleFunc("GET /live/{channelId}/{mediaType}/{representationId}/playlist.m3u8", api.handleMediaPlaylist)
-	mux.HandleFunc("GET /live/{channelId}/{mediaType}/{representationId}/{fragmentId}.m4s", api.handleSegment)
+	mux.HandleFunc("GET /live/{channelId}/{mediaType}/{representationId}/{segmentName}", api.handleSegment)
 	mux.HandleFunc("GET /key/{channelId}", api.handleKey)
 
 	return mux
@@ -59,8 +64,18 @@ func (a *API) handleMediaPlaylist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	playlist, err := sess.GetMediaPlaylist(mediaType, repId)
+	var playlist string
+	for i := 0; i < playlistMaxRetries; i++ {
+		playlist, err = sess.GetMediaPlaylist(mediaType, repId)
+		if err == nil {
+			break // Success
+		}
+		sess.Logger.Debugf("Attempt %d: Media playlist for repId '%s' not ready, retrying in %v...", i+1, repId, playlistRetryInterval)
+		time.Sleep(playlistRetryInterval)
+	}
+
 	if err != nil {
+		sess.Logger.Errorf("Failed to generate media playlist for repId '%s' after %d attempts: %v. Returning 404.", repId, playlistMaxRetries, err)
 		http.Error(w, fmt.Sprintf("Failed to generate media playlist: %v", err), http.StatusNotFound)
 		return
 	}
@@ -71,47 +86,28 @@ func (a *API) handleMediaPlaylist(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) handleSegment(w http.ResponseWriter, r *http.Request) {
 	channelId := r.PathValue("channelId")
-	mediaType := r.PathValue("mediaType")
 	repId := r.PathValue("representationId")
-	fragmentId := r.PathValue("fragmentId")
+	segmentName := r.PathValue("segmentName") // This will always have .m4s suffix
 
-	// The segment URL is the key in the cache. We need to reconstruct it.
-	// This is a simplification. A more robust solution would pass the full segment URL
-	// or have a more deterministic way to build the key.
 	sess, err := a.sessionMgr.GetOrCreateSession(channelId)
 	if err != nil {
 		http.Error(w, "Failed to get session", http.StatusInternalServerError)
 		return
 	}
 
-	// Reconstruct the segment URL to use as the cache key.
-	// This assumes a certain URL structure, which should be made more robust.
-	// For now, we find the base URL from the manifest URL.
-	baseURL, _ := url.Parse(sess.ManifestURL)
-	var segPath string
-	for _, p := range sess.MPD.Periods {
-		for _, as := range p.Sets {
-			if as.ContentType == mediaType {
-				for _, r := range as.Representations {
-					if r.ID == repId {
-						segPath = strings.Replace(as.SegmentTemplate.Media, "$RepresentationID$", repId, 1)
-						segPath = strings.Replace(segPath, "$Time$", fragmentId, 1)
-						break
-					}
-				}
-			}
-		}
-	}
-	if segPath == "" {
-		http.Error(w, "Could not determine segment path", http.StatusNotFound)
-		return
+	// The logic is now extremely simple, as per your design.
+	// We just construct the standardized cache key and look it up.
+	segmentId := strings.TrimSuffix(segmentName, ".m4s")
+	if segmentId == "init" {
+		// This is the standardized name for init segments in the cache.
 	}
 
-	segmentURL := baseURL.ResolveReference(&url.URL{Path: segPath})
+	cacheKey := fmt.Sprintf("%s/%s/%s", channelId, repId, segmentId)
 
-	data, found := sess.SegCache.Get(segmentURL.String())
+	sess.Logger.Debugf("Looking for segment in cache with key: %s", cacheKey)
+	data, found := sess.SegCache.Get(cacheKey)
 	if !found {
-		http.Error(w, fmt.Sprintf("Segment %s not found in cache", fragmentId), http.StatusNotFound)
+		http.Error(w, fmt.Sprintf("Segment %s not found in cache with key %s", segmentName, cacheKey), http.StatusNotFound)
 		return
 	}
 
